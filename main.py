@@ -1,10 +1,13 @@
 import os
 import re
+import json
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -18,6 +21,12 @@ ALLOWED_USERS = {int(x) for x in os.environ.get("ALLOWED_USERS", "").split(",") 
 WEBHOOK_PATH = f"/telegram/{TOKEN}"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 PORT = int(os.environ.get("PORT", "10000"))
+SEND_TOKEN = os.environ.get("SEND_TOKEN", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", TOKEN)
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+WHATSAPP_ACCESS_TOKEN = os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
+WHATSAPP_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_RECIPIENTS = [x.strip() for x in os.environ.get("WHATSAPP_RECIPIENTS", "").split(",") if x.strip()]
 
 
 def allowed(user_id: int) -> bool:
@@ -96,6 +105,53 @@ async def health():
 @app.get("/")
 async def root():
     return {"ok": True, "service": "glasytech-leads-bot"}
+
+
+@app.post("/send")
+async def trigger_send(request: Request):
+    provided = request.headers.get("x-send-token", "")
+    if not SEND_TOKEN or provided != SEND_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+        if not text:
+            raise HTTPException(status_code=400, detail="Missing text")
+
+        results = []
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            tg_data = json.dumps({"chat_id": int(TELEGRAM_CHAT_ID), "text": text}).encode("utf-8")
+            tg_req = urllib.request.Request(tg_url, data=tg_data, headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(tg_req) as r:
+                    results.append({"channel": "telegram", "ok": True, "status": r.status, "body": json.loads(r.read().decode())})
+            except urllib.error.HTTPError as e:
+                results.append({"channel": "telegram", "ok": False, "status": e.code, "body": json.loads(e.read().decode()) if e.fp else str(e)})
+
+        for to in WHATSAPP_RECIPIENTS:
+            wa_url = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+            wa_data = json.dumps({
+                "messaging_product": "whatsapp",
+                "to": to,
+                "type": "text",
+                "text": {"body": text},
+            }).encode("utf-8")
+            wa_req = urllib.request.Request(
+                wa_url,
+                data=wa_data,
+                headers={"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(wa_req) as r:
+                    results.append({"channel": f"whatsapp:{to}", "ok": True, "status": r.status, "body": json.loads(r.read().decode())})
+            except urllib.error.HTTPError as e:
+                results.append({"channel": f"whatsapp:{to}", "ok": False, "status": e.code, "body": json.loads(e.read().decode()) if e.fp else str(e)})
+
+        return JSONResponse({"results": results})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post(WEBHOOK_PATH)
