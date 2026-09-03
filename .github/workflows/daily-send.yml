@@ -15,7 +15,7 @@ jobs:
         run: |
           curl -s -X POST https://glasytech-leads-bot.onrender.com/send \
             -H "Content-Type: application/json" \
-            -H "x-send-token: ${{ secrets.SEND_TOKEN }}" \
+            -H "x-send-token: glasytech-send-2026" \
             -d '{"text":"GlasyTech Daily Leads"}' \
             | tee /tmp/cloud-send.json
           echo "::notice::Cloud send result saved to /tmp/cloud-send.json"
